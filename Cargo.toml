@@ -10,9 +10,10 @@ edition = "2018"
 [profile.release]
 opt-level = "z"
 panic = "abort"
+
 [dependencies]
-fs-err = "2.5.0"
-unicode-bom = "1"
+fs-err = "3.3.0"
+unicode-bom = "2"
 
 [dependencies.winapi]
 version = "0.3"
@@ -27,5 +28,5 @@ features = [
     "winbase",
     "processthreadsapi",
     "objbase",
-    "impl-default"
+    "impl-default",
 ]
