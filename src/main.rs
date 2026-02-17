@@ -3,7 +3,7 @@ use std::{
     ffi::CString,
     mem::size_of,
     path::Path,
-    process::{exit, Command},
+    process::{Command, exit},
     ptr::null_mut,
 };
 
@@ -14,7 +14,7 @@ use winapi::{
         consoleapi,
         objbase::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE},
         processthreadsapi::GetExitCodeProcess,
-        shellapi::{ShellExecuteExA, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOA},
+        shellapi::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOA, ShellExecuteExA},
         synchapi::WaitForSingleObject,
         winbase::INFINITE,
         wincon,

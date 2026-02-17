@@ -20,7 +20,7 @@ impl Shim {
                 return Err(Error::new(
                     ErrorKind::NotFound,
                     format!("no path key in {}", shim_path.to_string_lossy()),
-                ))
+                ));
             }
         };
         let args = kvs.get("args").map(|a| {
