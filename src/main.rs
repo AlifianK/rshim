@@ -1,3 +1,6 @@
+mod shims;
+use shims::Shim;
+
 use std::{
     env,
     ffi::CString,
@@ -7,37 +10,38 @@ use std::{
     ptr::null_mut,
 };
 
-use winapi::{
-    shared::minwindef::{BOOL, DWORD, FALSE, TRUE},
-    um::{
-        combaseapi::CoInitializeEx,
-        consoleapi,
-        objbase::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE},
-        processthreadsapi::GetExitCodeProcess,
-        shellapi::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOA, ShellExecuteExA},
-        synchapi::WaitForSingleObject,
-        winbase::INFINITE,
-        wincon,
-        winuser::SW_NORMAL,
-    },
+use windows_sys::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
 };
+use windows_sys::Win32::System::Console::{
+    CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    SetConsoleCtrlHandler,
+};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+use windows_sys::Win32::UI::Shell::{
+    SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOA, ShellExecuteExA,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_NORMAL;
+use windows_sys::core::BOOL;
+
+type DWORD = std::os::raw::c_ulong;
+
+const TRUE: BOOL = 1;
+const FALSE: BOOL = 0;
 
 unsafe extern "system" fn routine_handler(evt: DWORD) -> BOOL {
     match evt {
-        wincon::CTRL_C_EVENT => TRUE,        //eprintln!("ctrl_c handled!"),
-        wincon::CTRL_BREAK_EVENT => TRUE,    //eprintln!("ctrl_break handled!"),
-        wincon::CTRL_CLOSE_EVENT => TRUE,    //eprintln!("ctrl_close handled!"),
-        wincon::CTRL_LOGOFF_EVENT => TRUE,   //eprintln!("ctrl_logoff handled!"),
-        wincon::CTRL_SHUTDOWN_EVENT => TRUE, //eprintln!("ctrl_shutdown handled!"),
+        CTRL_C_EVENT => TRUE,        //eprintln!("ctrl_c handled!"),
+        CTRL_BREAK_EVENT => TRUE,    //eprintln!("ctrl_break handled!"),
+        CTRL_CLOSE_EVENT => TRUE,    //eprintln!("ctrl_close handled!"),
+        CTRL_LOGOFF_EVENT => TRUE,   //eprintln!("ctrl_logoff handled!"),
+        CTRL_SHUTDOWN_EVENT => TRUE, //eprintln!("ctrl_shutdown handled!"),
         other => {
             eprintln!("unknown event number: {}, unhandled!", other);
             return FALSE;
         }
     }
 }
-
-mod shims;
-use shims::Shim;
 
 const EXIT_FAILED_LOAD_SHIM: i32 = 1;
 const EXIT_FAILED_SPAWN_PROG: i32 = 2;
@@ -46,7 +50,7 @@ const EXIT_PROG_TERMINATED: i32 = 4;
 
 const ERROR_ELEVATION_REQUIRED: i32 = 740;
 fn main() {
-    let res: BOOL = unsafe { consoleapi::SetConsoleCtrlHandler(Some(routine_handler), TRUE) };
+    let res: BOOL = unsafe { SetConsoleCtrlHandler(Some(routine_handler), TRUE) };
     if res == FALSE {
         eprintln!("shim: register Ctrl handler failed.");
     }
@@ -120,14 +124,15 @@ fn execute_elevated(program: &Path, args: &[String]) -> i32 {
     let mut info = SHELLEXECUTEINFOA::default();
     info.cbSize = size_of::<SHELLEXECUTEINFOA>() as DWORD;
     info.fMask = SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb = runas.as_ptr();
-    info.lpFile = program.as_ptr();
-    info.lpParameters = params.as_ptr();
+    // Cast from *const i8 to *const u8
+    info.lpVerb = runas.as_ptr().cast::<u8>();
+    info.lpFile = program.as_ptr().cast::<u8>();
+    info.lpParameters = params.as_ptr().cast::<u8>();
     info.nShow = SW_NORMAL;
     let res = unsafe {
         CoInitializeEx(
             null_mut(),
-            COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
+            COINIT_APARTMENTTHREADED as u32 | COINIT_DISABLE_OLE1DDE as u32,
         );
         ShellExecuteExA(&mut info as *mut _)
     };

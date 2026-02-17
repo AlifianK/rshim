@@ -10,23 +10,20 @@ edition = "2024"
 [profile.release]
 opt-level = "z"
 panic = "abort"
+lto = "fat"
+codegen-units = 1
 
 [dependencies]
 fs-err = "3.3.0"
 unicode-bom = "2"
 
-[dependencies.winapi]
-version = "0.3"
+[dependencies.windows-sys]
+version = "0.61.2"
 features = [
-    "wincon",
-    "consoleapi",
-    "minwindef",
-    "shellapi",
-    "winuser",
-    "synchapi",
-    "combaseapi",
-    "winbase",
-    "processthreadsapi",
-    "objbase",
-    "impl-default",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ]
