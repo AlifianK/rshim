@@ -47,6 +47,7 @@ fn get_shim_file_path() -> Result<PathBuf, Error> {
     }
     Ok(current_exe)
 }
+
 use unicode_bom::Bom;
 fn parse_shim_file(shim_path: &Path) -> Result<HashMap<String, String>, Error> {
     let mut kvs = HashMap::new();
@@ -65,7 +66,7 @@ fn parse_shim_file(shim_path: &Path) -> Result<HashMap<String, String>, Error> {
     {
         if let Some((key, value)) = line.split_once("=") {
             let key = key.trim();
-            let value = value.trim();
+            let value = value.trim().trim_start_matches("\"").trim_end_matches("\"");
             kvs.insert(key.to_string(), value.to_string());
         } else {
             return Err(Error::new(
