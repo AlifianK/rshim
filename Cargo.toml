@@ -13,16 +13,16 @@ panic = "abort"
 lto = "fat"
 codegen-units = 1
 
-[dependencies]
-fs-err = "3.3.0"
-unicode-bom = "2"
-
 [dependencies.windows-sys]
 version = "0.61.2"
 features = [
-    "Win32_System_Registry",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

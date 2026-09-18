@@ -28,6 +28,51 @@ then
 ./repshims.bat
 ```
 
+The script uses `target\release\rshim.exe` relative to its own location. It
+updates executables with a matching `.shim` file in the user and global Scoop
+directories, and returns a failure code if a copy fails. Updating global shims
+may require an administrator terminal.
+
+## Shim files and behavior
+
+Place a UTF-8 file (with or without a BOM) beside the shim executable, with the
+same base name and a `.shim` extension:
+
+```ini
+path = "%LOCALAPPDATA%\Programs\example\example.exe"
+args = --config "%~dp0\example.json" ""
+EXAMPLE_HOME = %USERPROFILE%\example
+```
+
+- Preset arguments and the caller's original Windows command line retain their
+  quoting, empty arguments, backslashes, and UTF-16 characters.
+- `%NAME%` in `path` and environment entries expands against the inherited
+  environment. Unknown names stay literal. An empty environment entry removes
+  the variable. Environment value quotes are literal.
+- Each `%~dp0` in `args` expands to the shim directory, without a trailing slash.
+- Console targets inherit input/output and receive Ctrl+C directly. The shim
+  waits and returns the target's exit code. GUI targets detach from the console
+  while retaining redirected streams. Batch targets run through `cmd.exe`.
+- The direct child joins a cleanup job before it starts. Killing the shim kills
+  that child; descendants can outlive it so background launchers keep working.
+- Targets requiring elevation use the Unicode Windows shell API. UAC-launched
+  processes cannot be started suspended through that API, and Windows may deny
+  cleanup-job assignment; a failed assignment produces a diagnostic.
+
+## Development checks
+
+```shell
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo fmt --check
+```
+
+The Windows integration tests compile small probe executables using `rustc`
+and keep their fixtures under `target\integration-fixtures`. Installer tests
+use isolated Scoop directories; they do not replace installed shims. UAC
+interaction is not part of the automated tests. Windows API bindings use
+`windows-sys`; the `windows` crate is not required.
+
 
 ## Executable Size
 Without `crt-static` enabled: around `200kb`
