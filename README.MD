@@ -51,10 +51,14 @@ EXAMPLE_HOME = %USERPROFILE%\example
   the variable. Environment value quotes are literal.
 - Each `%~dp0` in `args` expands to the shim directory, without a trailing slash.
 - Console targets inherit input/output and receive Ctrl+C directly. The shim
-  waits and returns the target's exit code. GUI targets detach from the console
-  while retaining redirected streams. Batch targets run through `cmd.exe`.
-- The direct child joins a cleanup job before it starts. Killing the shim kills
-  that child; descendants can outlive it so background launchers keep working.
+  waits and returns the target's exit code. Batch targets run through `cmd.exe`.
+- GUI targets detach and the shim returns immediately, so applications such as
+  Mp3tag do not hold a PowerShell or Command Prompt session open. Redirected
+  streams remain available to the GUI process until it closes them.
+- Console targets join a cleanup job before they start. Killing the shim kills
+  the direct console child; descendants can outlive it so background launchers
+  keep working. Detached GUI targets are not placed in that job and outlive the
+  shim.
 - Targets requiring elevation use the Unicode Windows shell API. UAC-launched
   processes cannot be started suspended through that API, and Windows may deny
   cleanup-job assignment; a failed assignment produces a diagnostic.

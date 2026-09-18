@@ -14,8 +14,8 @@ fn run() -> i32 {
             return 1;
         }
     };
-    let process = match windows::launch(&shim) {
-        Ok(process) => process,
+    let launch = match windows::launch(&shim) {
+        Ok(launch) => launch,
         Err(error) => {
             eprintln!(
                 "Error while spawning target program `{}`: {error}",
@@ -23,6 +23,9 @@ fn run() -> i32 {
             );
             return 2;
         }
+    };
+    let windows::Launch::Foreground(process) = launch else {
+        return 0;
     };
     match process.wait() {
         Ok(code) => code as i32,

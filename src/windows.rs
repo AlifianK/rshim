@@ -35,6 +35,11 @@ use windows_sys::Win32::{
     },
 };
 
+pub enum Launch {
+    Foreground(Process),
+    Detached,
+}
+
 pub struct Process {
     handle: OwnedHandle,
     _job: OwnedHandle,
@@ -131,7 +136,7 @@ fn create_job() -> io::Result<OwnedHandle> {
     }
 }
 
-pub fn launch(shim: &Shim) -> io::Result<Process> {
+pub fn launch(shim: &Shim) -> io::Result<Launch> {
     let params = parameters(&shim.args)?;
     let target = wide(shim.target_path.as_os_str())?;
     if target.contains(&34) {
@@ -159,7 +164,6 @@ pub fn launch(shim: &Shim) -> io::Result<Process> {
             return Err(Error::last_os_error());
         }
     }
-    let job = create_job()?;
     let mut startup = STARTUPINFOW::default();
     unsafe {
         GetStartupInfoW(&mut startup);
@@ -175,7 +179,9 @@ pub fn launch(shim: &Shim) -> io::Result<Process> {
             SHGFI_EXETYPE,
         )
     };
-    if (exe_type >> 16) & 0xffff != 0 {
+    let is_gui = (exe_type >> 16) & 0xffff != 0;
+    let job = if is_gui { None } else { Some(create_job()?) };
+    if is_gui {
         // Redirection handles remain valid after detaching. Clear only actual
         // console handles so GUI tools can still use piped input and output.
         for handle in [
@@ -257,6 +263,10 @@ pub fn launch(shim: &Shim) -> io::Result<Process> {
             return Err(error);
         }
         let handle = elevate(&target, &params)?;
+        if is_gui {
+            return Ok(Launch::Detached);
+        }
+        let job = job.expect("console launches create a job");
         // UAC launches through the shell; it cannot start suspended here, and
         // Windows may deny job assignment across integrity levels.
         if unsafe { AssignProcessToJobObject(job.as_raw_handle(), handle.as_raw_handle()) } == 0 {
@@ -265,11 +275,18 @@ pub fn launch(shim: &Shim) -> io::Result<Process> {
                 Error::last_os_error()
             );
         }
-        return Ok(Process { handle, _job: job });
+        return Ok(Launch::Foreground(Process { handle, _job: job }));
     }
     // CreateProcessW succeeded and gave us ownership of both handles.
     let handle = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
     let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
+    if is_gui {
+        if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
+            return Err(Error::last_os_error());
+        }
+        return Ok(Launch::Detached);
+    }
+    let job = job.expect("console launches create a job");
     if unsafe { AssignProcessToJobObject(job.as_raw_handle(), handle.as_raw_handle()) } == 0 {
         let error = Error::last_os_error();
         // An unassigned suspended process would otherwise remain forever.
@@ -281,7 +298,7 @@ pub fn launch(shim: &Shim) -> io::Result<Process> {
     if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
         return Err(Error::last_os_error()); // Closing the job terminates the child.
     }
-    Ok(Process { handle, _job: job })
+    Ok(Launch::Foreground(Process { handle, _job: job }))
 }
 
 fn elevate(target: &[u16], params: &[u16]) -> io::Result<OwnedHandle> {

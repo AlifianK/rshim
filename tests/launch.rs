@@ -269,6 +269,52 @@ fn gui_target_preserves_redirected_streams() {
 }
 
 #[test]
+fn gui_target_returns_immediately_and_outlives_shim() {
+    let gui = GUI_PROBE.get_or_init(|| compile_probe(true));
+    let fixture = Fixture::new("");
+    let pid_file = fixture.dir.join("gui-child.pid");
+    fixture.config(&format!(
+        "path = {}\nargs = sleep \"{}\"\n",
+        gui.display(),
+        pid_file.display()
+    ));
+    let started = Instant::now();
+    let status = fixture
+        .command()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "shim waited for GUI target"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let child_id = loop {
+        if let Ok(text) = fs::read_to_string(&pid_file)
+            && let Ok(id) = text.parse::<u32>()
+        {
+            break id;
+        }
+        assert!(Instant::now() < deadline, "GUI child did not start");
+        thread::sleep(Duration::from_millis(20));
+    };
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, child_id) };
+    assert!(!handle.is_null());
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    assert_ne!(
+        unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) },
+        WAIT_OBJECT_0,
+        "GUI child exited with the shim"
+    );
+    unsafe {
+        TerminateProcess(handle.as_raw_handle(), 0);
+    }
+}
+
+#[test]
 fn installer_uses_its_own_build_and_reports_failures() {
     let fixture = Fixture::new("");
     let script = fixture.dir.join("repshims.bat");
