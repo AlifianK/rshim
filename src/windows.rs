@@ -11,6 +11,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_ELEVATION_REQUIRED, WAIT_OBJECT_0},
+    Storage::FileSystem::SearchPathW,
     System::{
         Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
         Console::{FreeConsole, GetConsoleMode, SetConsoleCtrlHandler},
@@ -136,6 +137,30 @@ fn create_job() -> io::Result<OwnedHandle> {
     }
 }
 
+fn search_executable(target: &[u16]) -> io::Result<Vec<u16>> {
+    let mut path = vec![0; 260];
+    loop {
+        let len = unsafe {
+            SearchPathW(
+                null(),
+                target.as_ptr(),
+                windows_sys::core::w!(".exe"),
+                path.len() as u32,
+                path.as_mut_ptr(),
+                null_mut(),
+            )
+        } as usize;
+        if len == 0 {
+            return Err(Error::last_os_error());
+        }
+        if len < path.len() {
+            path.truncate(len + 1);
+            return Ok(path);
+        }
+        path.resize(len + 1, 0);
+    }
+}
+
 pub fn launch(shim: &Shim) -> io::Result<Launch> {
     let params = parameters(&shim.args)?;
     let target = wide(shim.target_path.as_os_str())?;
@@ -164,6 +189,17 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
             return Err(Error::last_os_error());
         }
     }
+    let batch = shim
+        .target_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
+    // Resolve after applying shim environment entries, including PATH. Use the
+    // same executable for subsystem detection, process creation, and elevation.
+    let resolved = if !batch && !shim.target_path.is_absolute() {
+        search_executable(&target)?
+    } else {
+        target.clone()
+    };
     let mut startup = STARTUPINFOW::default();
     unsafe {
         GetStartupInfoW(&mut startup);
@@ -172,7 +208,7 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
     let mut file_info = SHFILEINFOW::default();
     let exe_type = unsafe {
         SHGetFileInfoW(
-            target.as_ptr(),
+            resolved.as_ptr(),
             0,
             &mut file_info,
             size_of::<SHFILEINFOW>() as u32,
@@ -213,10 +249,6 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
     let mut command = Vec::new();
     // Keep batch-file support. cmd /s /c removes the outermost quote pair
     // and interprets the original argument text using its own parsing rules.
-    let batch = shim
-        .target_path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
     if batch {
         let interpreter = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
         let interpreter = wide(&interpreter)?;
@@ -236,13 +268,9 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
     }
     command.push(0);
     let mut info = PROCESS_INFORMATION::default();
-    // An explicit absolute application path avoids CreateProcess's MAX_PATH
-    // limit on the executable token. Bare names retain Windows PATH lookup.
-    let application = if !batch && shim.target_path.is_absolute() {
-        target.as_ptr()
-    } else {
-        null()
-    };
+    // Keep the original argv[0], but launch the exact executable inspected above.
+    // An explicit application path also avoids the executable-token MAX_PATH limit.
+    let application = if !batch { resolved.as_ptr() } else { null() };
     let created = unsafe {
         CreateProcessW(
             application,
@@ -262,7 +290,7 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
         if error.raw_os_error() != Some(ERROR_ELEVATION_REQUIRED as i32) {
             return Err(error);
         }
-        let handle = elevate(&target, &params)?;
+        let handle = elevate(&resolved, &params)?;
         if is_gui {
             return Ok(Launch::Detached);
         }
@@ -282,7 +310,12 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
     let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
     if is_gui {
         if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
-            return Err(Error::last_os_error());
+            let error = Error::last_os_error();
+            // GUI children have no cleanup job; closing handles cannot kill them.
+            unsafe {
+                TerminateProcess(handle.as_raw_handle(), 2);
+            }
+            return Err(error);
         }
         return Ok(Launch::Detached);
     }
