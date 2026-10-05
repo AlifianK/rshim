@@ -1,4 +1,12 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-Ctarget-feature=+crt-static"]
 
-
+[alias]
+# Smaller release build for installed shims. It rebuilds std for size and
+# aborts on panic without a message. Requires a nightly toolchain with the
+# rust-src component.
+build-small = [
+    "build", "--release", "--target", "x86_64-pc-windows-msvc",
+    "-Zbuild-std=std,panic_abort",
+    "--config", "target.x86_64-pc-windows-msvc.rustflags = ['-Zunstable-options', '-Cpanic=immediate-abort']",
+]

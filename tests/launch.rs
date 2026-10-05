@@ -394,7 +394,11 @@ fn installer_uses_its_own_build_and_reports_failures() {
     };
     assert_eq!(run().status.code(), Some(1));
     assert_eq!(fs::read(&installed).unwrap(), b"old");
-    let release = fixture.dir.join("target").join("release");
+    let release = fixture
+        .dir
+        .join("target")
+        .join("x86_64-pc-windows-msvc")
+        .join("release");
     fs::create_dir_all(&release).unwrap();
     fs::write(release.join("rshim.exe"), b"new-shim").unwrap();
     let output = run();

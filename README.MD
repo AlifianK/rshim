@@ -18,9 +18,10 @@ There are several versions of `shim`:
 5. properly handle utf-8 with or without bom in shim file.
 
 ## Installation
-First install [rust](https://rustup.rs/)
+First install [rust](https://rustup.rs/) with a nightly toolchain and the
+`rust-src` component (`rustup component add rust-src`), then build:
 ```shell
-cargo build --release
+cargo build-small
 ```
 Close any running process with existed shim.
 then
@@ -28,10 +29,10 @@ then
 ./repshims.bat
 ```
 
-The script uses `target\release\rshim.exe` relative to its own location. It
-updates executables with a matching `.shim` file in the user and global Scoop
-directories, and returns a failure code if a copy fails. Updating global shims
-may require an administrator terminal.
+The script uses `target\x86_64-pc-windows-msvc\release\rshim.exe` relative to
+its own location. It updates executables with a matching `.shim` file in the
+user and global Scoop directories, and returns a failure code if a copy fails.
+Updating global shims may require an administrator terminal.
 
 ## Shim files and behavior
 
@@ -84,6 +85,9 @@ interaction is not part of the automated tests. Windows API bindings use
 
 
 ## Executable Size
-Without `crt-static` enabled: around `200kb`
+Both builds link the C runtime statically, so the shim does not need the
+Visual C++ Redistributable.
 
-With `crt-static` enabled: around `300kb`
+- `cargo build --release`: about 239 KB.
+- `cargo build-small`: about 154 KB. It rebuilds the standard library for
+  size, and a panic ends the shim at once, without a message or backtrace.

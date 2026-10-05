@@ -1,8 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "SHIM_SOURCE=%~dp0target\release\rshim.exe"
+set "SHIM_SOURCE=%~dp0target\x86_64-pc-windows-msvc\release\rshim.exe"
 if not exist "%SHIM_SOURCE%" (
-  echo Missing build: "%SHIM_SOURCE%". Run cargo build --release first. 1>&2
+  echo Missing build: "%SHIM_SOURCE%". Run cargo build-small first. 1>&2
   exit /b 1
 )
 if not defined SCOOP set "SCOOP=%USERPROFILE%\scoop"
