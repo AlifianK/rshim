@@ -11,6 +11,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    ptr::null,
     sync::{
         OnceLock,
         atomic::{AtomicUsize, Ordering},
@@ -20,9 +21,16 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::WAIT_OBJECT_0,
-    System::Threading::{
-        CREATE_NO_WINDOW, OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
-        WaitForSingleObject,
+    System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        },
+        Threading::{
+            CREATE_NO_WINDOW, OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            TerminateProcess, WaitForSingleObject,
+        },
     },
 };
 
@@ -242,6 +250,49 @@ fn invalid_or_missing_config_fails_cleanly() {
     assert_eq!(fixture.command().output().unwrap().status.code(), Some(1));
     fixture.config("path = Z:\\nonexistent-rshim-test.exe\n");
     assert_eq!(fixture.command().output().unwrap().status.code(), Some(2));
+
+    // The shim's own directory comes first in the executable search. A job
+    // contains any relaunched shims, so that a failure cannot leave them running.
+    fixture.config("path = test\n");
+    let job = unsafe { CreateJobObjectW(null(), null()) };
+    assert!(!job.is_null());
+    let job = unsafe { OwnedHandle::from_raw_handle(job) };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    assert_ne!(
+        unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of_val(&limits) as u32,
+            )
+        },
+        0
+    );
+    let mut shim = fixture
+        .command()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert_ne!(
+        unsafe { AssignProcessToJobObject(job.as_raw_handle(), shim.as_raw_handle()) },
+        0
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = shim.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            drop(job);
+            let _ = shim.wait();
+            panic!("shim relaunched itself");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(2));
 }
 
 #[test]

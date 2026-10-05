@@ -50,6 +50,11 @@ EXAMPLE_HOME = %USERPROFILE%\example
   environment. Unknown names stay literal. An empty environment entry removes
   the variable. Environment value quotes are literal.
 - Each `%~dp0` in `args` expands to the shim directory, without a trailing slash.
+- A `path` without a directory is found the way Windows `SearchPath` finds it,
+  with `.exe` added when it has no extension. The search starts in the shim
+  directory and uses `PATH` after the shim's environment entries apply. The
+  shim fails with an error when `path` resolves to the shim itself, so that it
+  does not relaunch itself without end.
 - Console targets inherit input/output and receive Ctrl+C directly. The shim
   waits and returns the target's exit code. Batch targets run through `cmd.exe`.
 - GUI targets detach and the shim returns immediately, so applications such as

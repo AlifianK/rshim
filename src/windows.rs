@@ -1,40 +1,47 @@
 use crate::shims::Shim;
 use std::{
-    ffi::OsStr,
-    io::{self, Error},
-    mem::size_of,
+    env,
+    ffi::{OsStr, OsString, c_void},
+    fs::File,
+    io::{self, Error, Read, Seek, SeekFrom},
+    mem::{size_of, transmute},
     os::windows::{
-        ffi::OsStrExt,
+        ffi::{OsStrExt, OsStringExt},
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     ptr::{null, null_mut},
 };
-use windows_sys::Win32::{
-    Foundation::{ERROR_ELEVATION_REQUIRED, WAIT_OBJECT_0},
-    Storage::FileSystem::SearchPathW,
-    System::{
-        Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
-        Console::{FreeConsole, GetConsoleMode, SetConsoleCtrlHandler},
-        Environment::{GetCommandLineW, SetEnvironmentVariableW},
-        JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JobObjectExtendedLimitInformation, SetInformationJobObject,
+use windows_sys::{
+    Win32::{
+        Foundation::{ERROR_ELEVATION_REQUIRED, WAIT_OBJECT_0},
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle, SearchPathW,
         },
-        Threading::{
-            CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, GetStartupInfoW, INFINITE,
-            PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW,
-            TerminateProcess, WaitForSingleObject,
+        System::{
+            Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE},
+            Console::{FreeConsole, GetConsoleMode, SetConsoleCtrlHandler},
+            Environment::{GetCommandLineW, SetEnvironmentVariableW},
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JobObjectExtendedLimitInformation, SetInformationJobObject,
+            },
+            LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW},
+            Threading::{
+                CREATE_SUSPENDED, CreateProcessW, GetExitCodeProcess, GetStartupInfoW, INFINITE,
+                PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW,
+                TerminateProcess, WaitForSingleObject,
+            },
+        },
+        UI::{
+            Shell::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+            WindowsAndMessaging::SW_NORMAL,
         },
     },
-    UI::{
-        Shell::{
-            SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, SHFILEINFOW,
-            SHGFI_EXETYPE, SHGetFileInfoW, ShellExecuteExW,
-        },
-        WindowsAndMessaging::SW_NORMAL,
-    },
+    core::{BOOL, HRESULT, PCSTR, PCWSTR, s, w},
 };
+
+const IMAGE_SUBSYSTEM_WINDOWS_GUI: u16 = 2;
 
 pub enum Launch {
     Foreground(Process),
@@ -144,7 +151,7 @@ fn search_executable(target: &[u16]) -> io::Result<Vec<u16>> {
             SearchPathW(
                 null(),
                 target.as_ptr(),
-                windows_sys::core::w!(".exe"),
+                w!(".exe"),
                 path.len() as u32,
                 path.as_mut_ptr(),
                 null_mut(),
@@ -158,6 +165,48 @@ fn search_executable(target: &[u16]) -> io::Result<Vec<u16>> {
             return Ok(path);
         }
         path.resize(len + 1, 0);
+    }
+}
+
+// Read the PE header directly. The shell's executable-type query would load
+// shell32 and its dependencies on every shim start.
+fn subsystem(file: &mut File) -> io::Result<u16> {
+    let mut dos = [0; 64];
+    file.read_exact(&mut dos)?;
+    if !dos.starts_with(b"MZ") {
+        return Err(Error::from(io::ErrorKind::InvalidData));
+    }
+    let offset = u32::from_le_bytes([dos[60], dos[61], dos[62], dos[63]]);
+    // Subsystem follows the signature, the 20-byte file header, and 68 bytes
+    // of the optional header in both PE32 and PE32+ images.
+    let mut nt = [0; 94];
+    file.seek(SeekFrom::Start(offset.into()))?;
+    file.read_exact(&mut nt)?;
+    if !nt.starts_with(b"PE\0\0") {
+        return Err(Error::from(io::ErrorKind::InvalidData));
+    }
+    Ok(u16::from_le_bytes([nt[92], nt[93]]))
+}
+
+fn file_id(file: &File) -> io::Result<(u32, u32, u32)> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(Error::last_os_error());
+    }
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
+
+// A bare name can resolve to this shim through its own directory or PATH, and
+// launching it would start the shim again without end.
+fn is_current_exe(target: &File) -> bool {
+    let shim = env::current_exe().and_then(File::open);
+    match (file_id(target), shim.and_then(|shim| file_id(&shim))) {
+        (Ok(target), Ok(shim)) => target == shim,
+        _ => false,
     }
 }
 
@@ -200,22 +249,23 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
     } else {
         target.clone()
     };
+    // Treat an unreadable target as a console program, so that process
+    // creation reports the actual error.
+    let is_gui = match File::open(OsString::from_wide(&resolved[..resolved.len() - 1])) {
+        Ok(file) if is_current_exe(&file) => {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "target path resolves to the shim itself",
+            ));
+        }
+        Ok(mut file) => subsystem(&mut file).ok() == Some(IMAGE_SUBSYSTEM_WINDOWS_GUI),
+        Err(_) => false,
+    };
     let mut startup = STARTUPINFOW::default();
     unsafe {
         GetStartupInfoW(&mut startup);
     }
     startup.cb = size_of::<STARTUPINFOW>() as u32;
-    let mut file_info = SHFILEINFOW::default();
-    let exe_type = unsafe {
-        SHGetFileInfoW(
-            resolved.as_ptr(),
-            0,
-            &mut file_info,
-            size_of::<SHFILEINFOW>() as u32,
-            SHGFI_EXETYPE,
-        )
-    };
-    let is_gui = (exe_type >> 16) & 0xffff != 0;
     let job = if is_gui { None } else { Some(create_job()?) };
     if is_gui {
         // Redirection handles remain valid after detaching. Clear only actual
@@ -334,7 +384,35 @@ pub fn launch(shim: &Shim) -> io::Result<Launch> {
     Ok(Launch::Foreground(Process { handle, _job: job }))
 }
 
+type Export = unsafe extern "system" fn() -> isize;
+
+fn system_function(library: PCWSTR, name: PCSTR) -> io::Result<Export> {
+    unsafe {
+        let module = LoadLibraryExW(library, null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if module.is_null() {
+            return Err(Error::last_os_error());
+        }
+        GetProcAddress(module, name).ok_or_else(Error::last_os_error)
+    }
+}
+
 fn elevate(target: &[u16], params: &[u16]) -> io::Result<OwnedHandle> {
+    type ShellExecuteExW = unsafe extern "system" fn(*mut SHELLEXECUTEINFOW) -> BOOL;
+    type CoInitializeEx = unsafe extern "system" fn(*const c_void, u32) -> HRESULT;
+    type CoUninitialize = unsafe extern "system" fn();
+    // Only UAC launches need the shell and COM. Load them here, not as imports,
+    // so that ordinary launches do not pay their startup cost.
+    let shell_execute = system_function(w!("shell32.dll"), s!("ShellExecuteExW"))?;
+    let initialize = system_function(w!("ole32.dll"), s!("CoInitializeEx"))?;
+    let uninitialize = system_function(w!("ole32.dll"), s!("CoUninitialize"))?;
+    // Each export has the signature that the Windows SDK declares for it.
+    let (shell_execute, initialize, uninitialize) = unsafe {
+        (
+            transmute::<Export, ShellExecuteExW>(shell_execute),
+            transmute::<Export, CoInitializeEx>(initialize),
+            transmute::<Export, CoUninitialize>(uninitialize),
+        )
+    };
     let verb: Vec<_> = "runas\0".encode_utf16().collect();
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -346,14 +424,14 @@ fn elevate(target: &[u16], params: &[u16]) -> io::Result<OwnedHandle> {
         ..Default::default()
     };
     unsafe {
-        let initialized = CoInitializeEx(
+        let initialized = initialize(
             null(),
             COINIT_APARTMENTTHREADED as u32 | COINIT_DISABLE_OLE1DDE as u32,
         ) >= 0;
-        let success = ShellExecuteExW(&mut info);
+        let success = shell_execute(&mut info);
         let error = Error::last_os_error();
         if initialized {
-            CoUninitialize();
+            uninitialize();
         }
         if success == 0 {
             return Err(error);
